@@ -1,16 +1,18 @@
-# == Imports and Streamlit page config ==
+# == Imports and Streamlit setup ==
 import streamlit as st; from Bio import SeqIO; from Bio.Seq import Seq
 from Bio.SeqUtils import gc_fraction, molecular_weight
 from Bio import pairwise2; from Bio.pairwise2 import format_alignment
 import io; import pandas as pd; import matplotlib.pyplot as plt; import base64; import textwrap; import traceback
 
+# == Page configuration and main title ==
 st.set_page_config(page_title="Biopython Toolkit", layout="wide")
-st.title("Biopython Toolkit — Streamlit App"); st.markdown("""A polished toolbox for common sequence tasks using **Biopython**.
+st.title("Biopython Toolkit — Streamlit App")
+st.markdown("""A polished toolbox for common sequence tasks using **Biopython**.
 Upload FASTA files, inspect sequences, compute GC content, translate, find ORFs, run pairwise alignment, search motifs, and visualize codon usage and GC distribution.
 """)
 st.sidebar.header("Quick actions"); st.sidebar.markdown("Upload a multi-FASTA and select tools from the main panel."); st.sidebar.markdown("---")
 
-# == Utility: Parse FASTA and create download links (file blocks) ==
+# == Helper: Parse FASTA files and create download links ==
 def parse_fasta_bytes(uploaded_file):
     try:
         if uploaded_file is None: return []
@@ -23,7 +25,7 @@ def download_link(data: bytes, fname: str, text: str):
 
 uploaded = st.file_uploader("Upload FASTA file (multi-FASTA allowed)", type=["fa","fasta","txt"])
 
-# == Example FASTA for new users ==
+# == Example FASTA display for quick test ==
 with st.expander("Example FASTA"):
     st.code(textwrap.dedent(""">seq1_example
 ATGCGTACGTTAGCGTAGCTAGCTAGCGTAGCTAGCTGACTGATCGATCGATCGTAGCTAG
@@ -31,7 +33,7 @@ ATGCGTACGTTAGCGTAGCTAGCTAGCGTAGCTAGCTGACTGATCGATCGATCGTAGCTAG
 ATGAAATTTGGGCCCTTTAAACCCGGGATGCTAGCTAGCTAA"""))
 records = parse_fasta_bytes(uploaded) if uploaded else []
 
-# == UX checkboxes: enable/disable tools ==
+# == Toolbox control panel ==
 st.header("Tools"); col1, col2 = st.columns(2)
 with col1:
     show_upload = st.checkbox("Show uploaded sequences", True)
@@ -43,7 +45,7 @@ with col2:
     show_motif = st.checkbox("Motif search", True)
     show_codon = st.checkbox("Codon usage & plots", True)
 
-# == Main block: sequence display ==
+# == Uploaded sequence block ==
 if show_upload:
     st.subheader("Uploaded sequences")
     if not records: st.info("No FASTA uploaded yet. Paste or upload a FASTA to begin. Use the example above to test.")
@@ -54,18 +56,17 @@ if show_upload:
                 st.code(str(rec.seq[:1000]) + ("..." if len(rec.seq)>1000 else ""))
                 st.markdown(download_link(f">{rec.id}\n{str(rec.seq)}\n".encode('utf-8'), f"{rec.id}.fasta", "Download this sequence (FASTA)"), unsafe_allow_html=True)
 
-# == Sequence summary: length and GC% ==
+# == Sequence summary block: length, GC ==
 if show_summary:
     st.subheader("Sequence summary")
     if not records: st.info("Upload FASTA to compute summary.")
     else:
         rows = []
-        for rec in records:
-            rows.append({"ID": rec.id, "Length": len(rec.seq), "GC%": round(gc_fraction(rec.seq)*100,3)})
-        df = pd.DataFrame(rows); st.dataframe(df)
-        st.markdown("Download summary:"); st.markdown(download_link(df.to_csv(index=False).encode('utf-8'), "summary.csv", "Download CSV"), unsafe_allow_html=True)
+        for rec in records: rows.append({"ID": rec.id, "Length": len(rec.seq), "GC%": round(gc_fraction(rec.seq)*100,3)})
+        df = pd.DataFrame(rows); st.dataframe(df); st.markdown("Download summary:")
+        st.markdown(download_link(df.to_csv(index=False).encode('utf-8'), "summary.csv", "Download CSV"), unsafe_allow_html=True)
 
-# == Reverse complement & translation: DNA→protein ==
+# == Reverse Complement & Translation UI ==
 if show_revtrans:
     st.subheader("Reverse Complement & Translation")
     seq_choice = st.selectbox("Choose sequence", [r.id for r in records] if records else [], key="rev_choice")
@@ -74,20 +75,18 @@ if show_revtrans:
         rec = next(r for r in records if r.id==seq_choice); seq = rec.seq
         try:
             st.markdown("**Reverse Complement**"); st.code(str(seq.reverse_complement()))
-            st.markdown("**Translation (standard table)**")
-            prot = seq.translate(to_stop=False); st.code(str(prot))
-            st.markdown("**Protein molecular weight (Da)**")
-            try:
-                mw = molecular_weight(prot); st.write(round(mw,3))
+            st.markdown("**Translation (standard table)**"); prot = seq.translate(to_stop=False)
+            st.code(str(prot)); st.markdown("**Protein molecular weight (Da)**")
+            try: st.write(round(molecular_weight(prot),3))
             except Exception: st.write("Unable to compute molecular weight for translation.")
             if table: st.write("Translation info: (showing first 200 aa)"); st.code(str(prot[:200]))
         except Exception as e: st.error("Error computing translation or reverse complement: " + str(e))
 
-# == ORF Finder - six frame translation ==
+# == Six-frame ORF finder ==
 if show_orf:
     st.subheader("Six-frame translation and ORF finder")
     seq_choice = st.selectbox("Choose sequence for ORF", [r.id for r in records] if records else [], key="orf_choice2")
-    min_orf_len = st.number_input("Minimum ORF length (aa)", min_value=10, max_value=10000, value=30)
+    min_orf_len = st.number_input("Minimum ORF length (aa)", 10, 10000, 30)
     search_start_meth = st.selectbox("ORF search method", ["Start with M and end with Stop", "Any open region (no internal stop)"], key="orf_method")
     if seq_choice:
         rec = next(r for r in records if r.id==seq_choice); seq = rec.seq; frames = []
@@ -99,16 +98,20 @@ if show_orf:
                         for j in range(i+1, len(prot)):
                             if prot[j] == "*":
                                 length = j - i + 1
-                                if length >= min_orf_len: orfs.append({"strand": strand, "frame": frame, "aa_start": i, "aa_end": j, "length_aa": length,
-                                   "protein": str(prot[i:j+1]), "nuc_start": (i*3)+frame, "nuc_end": (j*3)+frame+3}); break
+                                if length >= min_orf_len: 
+                                    orfs.append({"strand": strand, "frame": frame, "aa_start": i, "aa_end": j, "length_aa": length,
+                                                 "protein": str(prot[i:j+1]), "nuc_start": (i*3)+frame, "nuc_end": (j*3)+frame+3})
+                                break
             else:
                 start = None
                 for i, aa in enumerate(prot):
                     if aa != "*" and start is None: start = i
                     if aa == "*" and start is not None:
                         length = i - start
-                        if length >= min_orf_len: orfs.append({"strand": strand, "frame": frame, "aa_start": start, "aa_end": i-1, "length_aa": length,
-                           "protein": str(prot[start:i]), "nuc_start": (start*3)+frame, "nuc_end": (i*3)+frame}); start = None
+                        if length >= min_orf_len:
+                            orfs.append({"strand": strand, "frame": frame, "aa_start": start, "aa_end": i-1, "length_aa": length,
+                                "protein": str(prot[start:i]), "nuc_start": (start*3)+frame, "nuc_end": (i*3)+frame})
+                        start = None
             return orfs
         seq_str = seq
         for strand, s in [(+1, seq_str), (-1, seq_str.reverse_complement())]:
@@ -119,7 +122,7 @@ if show_orf:
             st.markdown(download_link(df_orfs.to_csv(index=False).encode('utf-8'), "orfs.csv", "Download ORFs CSV"), unsafe_allow_html=True)
         else: st.write("No ORFs found meeting the length threshold. Try lowering the threshold.")
 
-# == Pairwise alignment: global/local ==
+# == Pairwise alignment tool. Fixed indentation error ==
 if show_align:
     st.subheader("Pairwise alignment")
     seqs = [r.id for r in records]
@@ -131,13 +134,15 @@ if show_align:
         if st.button("Run alignment", key="align_btn"):
             try:
                 alns = pairwise2.align.globalxx(str(rec1.seq), str(rec2.seq), one_alignment_only=True) if method=="global" else pairwise2.align.localxx(str(rec1.seq), str(rec2.seq), one_alignment_only=True)
-                if alns: aln = alns[0]; st.text(format_alignment(*aln))
+                if alns:
+                    aln = alns[0]
+                    st.text(format_alignment(*aln))
                     aln_text = format_alignment(*aln)
                     st.markdown(download_link(aln_text.encode('utf-8'), f"alignment_{s1}_vs_{s2}.txt", "Download alignment"), unsafe_allow_html=True)
                 else: st.write("No alignment found.")
             except Exception as e: st.error("Alignment failed: " + str(e)); st.text(traceback.format_exc())
 
-# == Motif search with regex ==
+# == Motif (restriction/regex) search ==
 if show_motif:
     st.subheader("Motif / Restriction search")
     motif = st.text_input("Enter motif (DNA regex, e.g., 'GAATTC' for EcoRI)")
@@ -153,7 +158,7 @@ if show_motif:
                 st.markdown(download_link(dfm.to_csv(index=False).encode('utf-8'), "motif_hits.csv", "Download motif hits"), unsafe_allow_html=True)
         except re.error as e: st.error("Invalid regex provided: " + str(e))
 
-# == Codon usage and GC% sliding window plots ==
+# == Codon usage and GC distribution plotting ==
 if show_codon:
     st.subheader("Codon usage & GC distribution plots")
     seq_choice = st.selectbox("Choose sequence", [r.id for r in records] if records else [], key="codon_seq")
@@ -173,13 +178,14 @@ if show_codon:
         fig2, ax2 = plt.subplots(figsize=(8,3)); ax2.plot(positions, gc_values)
         ax2.set_xlabel("Position (bp)"); ax2.set_ylabel("GC%"); ax2.set_title("Sliding-window GC%"); st.pyplot(fig2)
 
-# == Sidebar info and developer export: download full app as zip ==
+# == Sidebar information and developer export block ==
 st.sidebar.markdown("---"); st.sidebar.markdown("Developed with Biopython & Streamlit. No external network calls are made.")
 st.sidebar.markdown("You can download the full app package from the main menu (Developer export).")
 
+# == Developer export tool ==
 import zipfile, os; from io import BytesIO
 def make_zip_bytes(files):
-    buf = BytesIO(); 
+    buf = BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for fpath, arcname in files:
             zf.writestr(arcname, open(fpath, "rb").read())
@@ -196,4 +202,4 @@ if st.sidebar.button("Create app zip (for download)"):
         st.markdown(download_link(zip_bytes, "biopython_streamlit_app.zip", "Download app ZIP"), unsafe_allow_html=True)
     except Exception as e: st.error("Failed to create zip: " + str(e))
 
-# == End of app ==
+# End of application
